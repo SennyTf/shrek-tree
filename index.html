@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mutations — Crafting Tree</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0b0f17; color:#e7ecff; }
+    header { position: sticky; top: 0; z-index: 10; background: rgba(11,15,23,.92); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(255,255,255,.08); }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 14px; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .title { font-weight: 800; letter-spacing: .2px; }
+    .pill { display:inline-flex; gap:8px; align-items:center; padding:8px 10px; border-radius:999px; border:1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); }
+    input, button {
+      background: rgba(255,255,255,.06);
+      color: inherit;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 10px;
+      padding: 8px 10px;
+      outline: none;
+    }
+    input { width: 320px; }
+    button { cursor:pointer; }
+    button:hover { background: rgba(255,255,255,.10); }
+    .hint { opacity:.72; font-size: 12px; }
+
+    main { max-width: 1200px; margin: 0 auto; padding: 14px; display:grid; gap:12px; }
+    .panel { border:1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.03); border-radius:16px; overflow:hidden; }
+    .panelHead { padding:10px 12px; border-bottom:1px solid rgba(255,255,255,.08); display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .status { font-size:12px; opacity:.8; }
+    #viz { width:100%; height:74vh; display:block; }
+
+    .tooltip {
+      position: fixed; pointer-events:none;
+      padding: 10px 10px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(11,15,23,.97);
+      box-shadow: 0 10px 30px rgba(0,0,0,.45);
+      max-width: 560px;
+      transform: translate(10px, 10px);
+      display: none;
+    }
+    .tooltip .name { font-weight: 900; font-size: 14px; margin-bottom: 6px; }
+    .tooltip .meta { font-size: 12px; opacity: .9; display:grid; gap:4px; }
+    .tooltip .sep { height:1px; background: rgba(255,255,255,.10); margin: 8px 0; }
+    .tooltip ul { margin: 0; padding-left: 16px; }
+
+    .gridTitle { font-size:12px; opacity:.85; margin: 6px 0; }
+    .grid {
+      display:grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .cell {
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 10px;
+      background: rgba(255,255,255,.04);
+      padding: 6px 7px;
+      min-width: 130px;
+    }
+    .slotNum { font-size: 11px; opacity:.7; }
+    .slotVal { font-size: 12px; margin-top: 2px; font-weight: 650; }
+    .slotVal.small { font-weight: 550; opacity:.9; }
+
+    /* Slot 5 (main mutation) highlight */
+    .cell.center {
+      border-color: rgba(80, 255, 140, .55);
+      background: rgba(80, 255, 140, .10);
+      box-shadow: 0 0 0 1px rgba(80, 255, 140, .18) inset;
+    }
+    .cell.center .slotVal {
+      color: rgba(120, 255, 170, .95);
+    }
+
+    .tag {
+      display:inline-block;
+      padding:2px 8px;
+      border:1px solid rgba(255,255,255,.14);
+      border-radius:999px;
+      font-size: 12px;
+      opacity:.92;
+      margin-left: 8px;
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="row" style="justify-content:space-between;">
+      <div class="row">
+        <div class="title">🌿 Mutations Crafting Tree</div>
+        <div class="hint">Search a mutation → Enter. Hover nodes for ingredients + 3×3 combine layout. Click mutation nodes to drill in.</div>
+      </div>
+      <div class="hint" id="counts">—</div>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <div class="pill">
+        <input id="search" list="mutList" placeholder="Search mutation… (e.g. Timestalk)" />
+        <datalist id="mutList"></datalist>
+        <button id="go">Go</button>
+      </div>
+      <div class="pill">
+        <div class="hint">Current:</div>
+        <div id="current" style="font-weight:800;">—</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="panelHead">
+      <div class="status" id="status">Ready</div>
+      <div class="hint">Combine grid: ingredients in slots 1–9, mutation at <b>5</b>.</div>
+    </div>
+    <svg id="viz"></svg>
+  </div>
+</main>
+
+<div class="tooltip" id="tip"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const searchEl = $("#search");
+  const listEl = $("#mutList");
+  const goBtn = $("#go");
+  const statusEl = $("#status");
+  const countsEl = $("#counts");
+  const currentEl = $("#current");
+  const tipEl = $("#tip");
+  const svg = d3.select("#viz");
+
+  // --- Local dataset (no fetch) ---
+  const MUTATIONS = [
+    { name:"Ashwreath", rarity:"COMMON", size:"1x1", surface:"Soul Sand", spread:"4x Nether Wart / 4x Fire", drops:"1200x Nether Wart", effects:"Improved Harvest Boost / XP Loss" },
+    { name:"Choconut", rarity:"COMMON", size:"1x1", surface:"Farmland", spread:"4x Cocoa Beans", drops:"800x Cocoa Beans", effects:"Immunity" },
+    { name:"Dustgrain", rarity:"COMMON", size:"1x1", surface:"Farmland", spread:"4x Wheat", drops:"400x Wheat", effects:"Harvest Boost" },
+    { name:"Gloomgourd", rarity:"COMMON", size:"1x1", surface:"Farmland", spread:"1x Pumpkin / 1x Melon", drops:"170x Pumpkin / 800x Melon Slice", effects:"Water Retain / Bonus Drops" },
+    { name:"Lonelily", rarity:"COMMON", size:"1x1", surface:"Farmland", spread:"0 adjacent crops", drops:"600x Potato / 700x Carrot / 340x Pumpkin", effects:"Bonus Drops" },
+    { name:"Scourroot", rarity:"COMMON", size:"1x1", surface:"Farmland", spread:"2x Potato / 2x Carrot", drops:"600x Potato / 700x Carrot", effects:"Immunity / XP Boost" },
+    { name:"Shadevine", rarity:"COMMON", size:"1x1", surface:"Farmland", spread:"2x Cactus / 2x Sugar Cane", drops:"300x Cactus / 400x Sugar Cane", effects:"Improved Water Retain / Improved XP Boost / Harvest Loss" },
+    { name:"Veilshroom", rarity:"COMMON", size:"1x1", surface:"Mycelium", spread:"2x Red Mushroom / 2x Brown Mushroom", drops:"190x Brown Mushroom / 190x Red Mushroom", effects:"Improved Harvest Boost / Water Drain" },
+    { name:"Witherbloom", rarity:"COMMON", size:"1x1", surface:"Soul Sand", spread:"8x Dead Plant", drops:"1600x Wild Rose", effects:"Effect Spread" },
+
+    { name:"Chocoberry", rarity:"UNCOMMON", size:"1x1", surface:"Farmland", spread:"6x Choconut / 2x Gloomgourd", drops:"400x Cocoa Beans / 170x Pumpkin / 1600x Melon Slice", effects:"Water Retain" },
+    { name:"Cindershade", rarity:"UNCOMMON", size:"1x1", surface:"Soul Sand", spread:"4x Ashwreath / 4x Witherbloom", drops:"1200x Nether Wart / 800x Wild Rose", effects:"Effect Spread / Improved Harvest Boost / XP Loss" },
+    { name:"Coalroot", rarity:"UNCOMMON", size:"1x1", surface:"Farmland", spread:"5x Ashwreath / 3x Scourroot", drops:"[More Info Needed]", effects:"XP Boost" },
+    { name:"Creambloom", rarity:"UNCOMMON", size:"1x1", surface:"Farmland", spread:"8x Choconut", drops:"[More Info Needed]", effects:"Immunity" },
+    { name:"Duskbloom", rarity:"UNCOMMON", size:"1x1", surface:"Farmland", spread:"2x Moonflower / 2x Shadevine / 2x Sunflower / 2x Dustgrain", drops:"[More Info Needed]", effects:"Bonus Drops" },
+    { name:"Thornshade", rarity:"UNCOMMON", size:"1x1", surface:"Farmland", spread:"4x Wild Rose / 4x Veilshroom", drops:"[More Info Needed]", effects:"Effect Spread" },
+
+    { name:"Blastberry", rarity:"RARE", size:"1x1", surface:"Sand", spread:"5x Chocoberry / 3x Ashwreath", drops:"[More Info Needed]", effects:"Immunity / Improved Harvest Boost / XP Loss" },
+    { name:"Cheesebite", rarity:"RARE", size:"1x1", surface:"Farmland", spread:"4x Creambloom / 4x Fermento", drops:"[More Info Needed]", effects:"Improved Water Retain" },
+    { name:"Chloronite", rarity:"RARE", size:"1x1", surface:"Farmland", spread:"6x Coalroot / 2x Thornshade", drops:"[More Info Needed]", effects:"Immunity" },
+    { name:"Do-not-eat-shroom", rarity:"RARE", size:"1x1", surface:"Farmland", spread:"4x Veilshroom / 4x Scourroot", drops:"[More Info Needed]", effects:"Improved Harvest Boost / Water Drain" },
+    { name:"Fleshtrap", rarity:"RARE", size:"1x1", surface:"Farmland", spread:"4x Cindershade / 4x Lonelily", drops:"[More Info Needed]", effects:"Bonus Drops" },
+    { name:"Magic Jellybean", rarity:"RARE", size:"1x1", surface:"Sand", spread:"5x Sugar Cane / 3x Duskbloom", drops:"[More Info Needed]", effects:"Improved XP Boost / Harvest Loss" },
+    { name:"Noctilume", rarity:"RARE", size:"2x2", surface:"Farmland", spread:"6x Duskbloom / 2x Lonelily", drops:"[More Info Needed]", effects:"Effect Spread / Improved Water Retain / Harvest Loss" },
+    { name:"Snoozling", rarity:"RARE", size:"3x3", surface:"Farmland", spread:"4x Creambloom / 3x Dustgrain / 3x Witherbloom / 3x Duskbloom / 3x Thornshade", drops:"[More Info Needed]", effects:"Bonus Drops" },
+    { name:"Soggybud", rarity:"RARE", size:"1x1", surface:"Farmland", spread:"8x Melon", drops:"[More Info Needed]", effects:"Water Retain" },
+
+    { name:"Chorus Fruit", rarity:"EPIC", size:"1x1", surface:"End Stone", spread:"5x Chloronite / 3x Magic Jellybean", drops:"[More Info Needed]", effects:"Improved XP Boost / Harvest Loss" },
+    { name:"PlantBoy Advance", rarity:"EPIC", size:"2x2", surface:"Farmland", spread:"6x Snoozling / 6x Thunderling", drops:"[More Info Needed]", effects:"Harvest Boost" },
+    { name:"Puffercloud", rarity:"EPIC", size:"1x1", surface:"Farmland", spread:"2x Snoozling / 6x Do-not-eat-shroom", drops:"[More Info Needed]", effects:"Improved Harvest Boost / Water Drain" },
+    { name:"Shellfruit", rarity:"EPIC", size:"1x1", surface:"Farmland", spread:"Explode a Turtlellini with a Blastberry.", drops:"[More Info Needed]", effects:"Water Retain / Immunity" },
+    { name:"Startlevine", rarity:"EPIC", size:"1x1", surface:"Farmland", spread:"4x Blastberry / 4x Cheesebite", drops:"[More Info Needed]", effects:"Improved Water Retain / Improved XP Boost / Harvest Loss" },
+    { name:"Stoplight Petal", rarity:"EPIC", size:"1x1", surface:"Farmland", spread:"4x Snoozling / 4x Noctilume", drops:"[More Info Needed]", effects:"Effect Spread / Improved Water Retain / Harvest Loss" },
+    { name:"Thunderling", rarity:"EPIC", size:"1x1", surface:"Farmland", spread:"5x Soggybud / 3x Noctilume", drops:"[More Info Needed]", effects:"Effect Spread" },
+    { name:"Turtlellini", rarity:"EPIC", size:"1x1", surface:"Farmland", spread:"4x Soggybud / 4x Choconut", drops:"[More Info Needed]", effects:"Water Retain / Immunity" },
+    { name:"Zombud", rarity:"EPIC", size:"1x1", surface:"Soul Sand", spread:"4x Dead Plant / 2x Cindershade / 2x Fleshtrap", drops:"[More Info Needed]", effects:"Effect Spread / Bonus Drops" },
+
+    { name:"All-in Aloe", rarity:"LEGENDARY", size:"1x1", surface:"Sand", spread:"6x Magic Jellybean / 2x PlantBoy Advance", drops:"[More Info Needed]", effects:"Harvest Boost" },
+    { name:"Devourer", rarity:"LEGENDARY", size:"1x1", surface:"Farmland", spread:"4x Puffercloud / 4x Zombud", drops:"[More Info Needed]", effects:"Bonus Drops / Improved Harvest Boost / Water Drain" },
+    { name:"Glasscorn", rarity:"LEGENDARY", size:"2x2", surface:"Sand", spread:"6x Startlevine / 6x Chloronite", drops:"[More Info Needed]", effects:"Immunity / Improved Water Retain / Harvest Loss" },
+    { name:"Godseed", rarity:"LEGENDARY", size:"3x3", surface:"Farmland", spread:"All positive crop effects", drops:"[More Info Needed]", effects:"Improved Harvest Boost / Improved Water Retain / Improved XP Boost / Immunity / Bonus Drops / Improved Effect Spread" },
+    { name:"Jerryflower", rarity:"LEGENDARY", size:"1x1", surface:"Farmland", spread:"Grow the Jerryseed", drops:"[More Info Needed]", effects:"[Unknown]" },
+    { name:"Phantomleaf", rarity:"LEGENDARY", size:"1x1", surface:"Soul Sand", spread:"4x Chorus Fruit / 4x Shellfruit", drops:"[More Info Needed]", effects:"XP Boost / Immunity" },
+    { name:"Timestalk", rarity:"LEGENDARY", size:"1x1", surface:"Soul Sand", spread:"4x Stoplight Petal / 2x Chorus Fruit / 2x Shellfruit", drops:"[More Info Needed]", effects:"Improved Water Retain / Improved XP Boost / Harvest Loss" },
+  ];
+
+  const rarityOrder = ["COMMON","UNCOMMON","RARE","EPIC","LEGENDARY","MYTHIC","SPECIAL","UNKNOWN","BASE"];
+
+  // Slot numbers (1..9) -> index (0..8). Center is index 4 (slot 5).
+  // User requested patterns:
+  // - total=2 => put in second row: slots 4 and 6
+  // - single ingredient count=4 => put in slots 2,4,6,8 (cross)
+  // Otherwise fill neighbors in a "row-first" visual order:
+  // 4,6,2,8,1,3,7,9
+  const SLOTS_TWO = [4, 6].map(s => s - 1);                 // indices [3,5]
+  const SLOTS_CROSS = [2, 4, 6, 8].map(s => s - 1);         // indices [1,3,5,7]
+  const SLOTS_FILL = [4, 6, 2, 8, 1, 3, 7, 9].map(s => s-1); // indices [3,5,1,7,0,2,6,8]
+
+  const INDEX = new Map(MUTATIONS.map(m => [m.name, m]));
+  const NAMES = [...INDEX.keys()].sort((a,b)=>a.localeCompare(b));
+  const mutationNamesSet = new Set(NAMES);
+
+  // datalist
+  for (const n of NAMES) {
+    const opt = document.createElement("option");
+    opt.value = n;
+    listEl.appendChild(opt);
+  }
+
+  let ROOT = "Magic Jellybean";
+  if (!INDEX.has(ROOT)) ROOT = NAMES[0];
+
+  function safeText(s){ return (s||"").replace(/\s+/g," ").trim(); }
+  function setStatus(s){ statusEl.textContent = s; }
+
+  function showTip(html, x, y){
+    tipEl.innerHTML = html;
+    tipEl.style.left = x + "px";
+    tipEl.style.top = y + "px";
+    tipEl.style.display = "block";
+  }
+  function hideTip(){ tipEl.style.display = "none"; }
+
+  function parseIngredients(spreadLine){
+    const line = safeText(spreadLine);
+    if (!line) return [];
+    if (/0\s+adjacent\s+crops/i.test(line)) return [];
+    if (/all\s+positive\s+crop\s+effects/i.test(line)) return [{ name:"All positive crop effects", count: 1 }];
+    if (/grow\s+the\s+jerryseed/i.test(line)) return [{ name:"Jerryseed", count: 1 }];
+
+    const parts = line.split("/").map(p => safeText(p)).filter(Boolean);
+    const out = [];
+
+    for (const p0 of parts) {
+      const p = p0.replace(/[.]+$/,"");
+      const m = p.match(/^(\d+)\s*x\s*(.+)$/i);
+      if (m) {
+        out.push({ name: safeText(m[2]), count: Number(m[1]) });
+        continue;
+      }
+
+      // sentence-style: detect mutation names
+      const hits = [];
+      for (const n of mutationNamesSet) {
+        const re = new RegExp("\\b" + n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&") + "\\b", "i");
+        if (re.test(p)) hits.push(n);
+      }
+      if (hits.length) hits.forEach(n => out.push({ name:n, count:1 }));
+      else out.push({ name:p, count:1 });
+    }
+
+    // merge duplicates (preserve first-seen order)
+    const merged = new Map();
+    for (const it of out) merged.set(it.name, (merged.get(it.name)||0) + (it.count||1));
+    return [...merged.entries()].map(([name,count]) => ({name,count}));
+  }
+
+  // NEW: combine-layout rules per your request
+  function recommendLayout(ingredients, targetName){
+    const grid = Array.from({length: 9}, (_, i) => ({ slot: i+1, text: "" }));
+    grid[4].text = targetName; // slot 5 (center)
+
+    if (!ingredients.length) return { grid, note: "No adjacency ingredients required." };
+
+    // Special requirement lines (not real placement)
+    if (ingredients.length === 1 && /All positive crop effects/i.test(ingredients[0].name)) {
+      return { grid, note: "Requirement-based (not item placement): All positive crop effects." };
+    }
+    if (ingredients.length === 1 && /Jerryseed/i.test(ingredients[0].name)) {
+      grid[3].text = "Jerryseed"; // slot 4
+      return { grid, note: "Special condition: Grow the Jerryseed." };
+    }
+
+    const distinct = ingredients.length;
+    const total = ingredients.reduce((s,it)=>s+(it.count||1),0);
+
+    // Expand instances in the order they appear
+    const instances = [];
+    for (const it of ingredients){
+      const c = Math.max(1, Number(it.count||1));
+      for (let i=0;i<c;i++) instances.push(it.name);
+    }
+
+    // Rule A: exactly 2 total items -> put them in second row slots 4 and 6
+    if (total === 2) {
+      grid[SLOTS_TWO[0]].text = instances[0] || "";
+      grid[SLOTS_TWO[1]].text = instances[1] || "";
+      return { grid, note: "" };
+    }
+
+    // Rule B: single ingredient exactly 4 -> place on cross slots 2,4,6,8
+    if (distinct === 1 && total === 4) {
+      for (let i=0;i<4;i++) grid[SLOTS_CROSS[i]].text = instances[i];
+      return { grid, note: "" };
+    }
+
+    // General placement:
+    // Fill in a visually nice order: 4,6,2,8 then corners 1,3,7,9
+    // If total > 8, we compress by writing "Nx item" in slots.
+    if (total <= 8) {
+      for (let i=0;i<Math.min(8, instances.length);i++) {
+        grid[SLOTS_FILL[i]].text = instances[i];
+      }
+      return { grid, note: "" };
+    }
+
+    // Compression for total > 8: distribute each ingredient across the 8 slots as "Nx Name"
+    // (Still respects the row-first slot order)
+    const slotCounts = Array.from({length: 8}, () => ({})); // per-slot name->count
+    let cursor = 0;
+
+    // Round-robin distribute instances across slots
+    for (const name of instances) {
+      const s = cursor % 8;
+      slotCounts[s][name] = (slotCounts[s][name] || 0) + 1;
+      cursor++;
+    }
+
+    for (let i=0;i<8;i++){
+      const idx = SLOTS_FILL[i];
+      const entries = Object.entries(slotCounts[i]);
+      if (!entries.length) continue;
+
+      // If multiple names landed in one slot (rare), join them
+      grid[idx].text = entries
+        .sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0]))
+        .map(([n,c]) => `${c}x ${n}`)
+        .join(" + ");
+    }
+
+    return { grid, note: "Counts exceed 8 slots; layout compressed." };
+  }
+
+  function buildTree(rootName){
+    const visiting = new Set();
+    function nodeFor(name, count){
+      const isMut = mutationNamesSet.has(name);
+      const mut = isMut ? INDEX.get(name) : null;
+
+      const node = {
+        id: name,
+        count: count ?? 1,
+        kind: isMut ? "mutation" : "base",
+        rarity: mut?.rarity || (isMut ? "UNKNOWN" : "BASE"),
+        meta: mut || null,
+        cycle: false,
+        children: []
+      };
+
+      if (!isMut) return node;
+
+      const key = name.toLowerCase();
+      if (visiting.has(key)) { node.cycle = true; return node; }
+      visiting.add(key);
+
+      const ing = parseIngredients(mut.spread);
+      for (const it of ing) node.children.push(nodeFor(it.name, it.count || 1));
+
+      visiting.delete(key);
+      return node;
+    }
+    return nodeFor(rootName, 1);
+  }
+
+  function nodeColor(kind, rarity){
+    if (kind === "base") return "rgba(255,255,255,.28)";
+    const idx = Math.max(0, rarityOrder.indexOf((rarity||"UNKNOWN").toUpperCase()));
+    const a = 0.35 + Math.min(idx, 5) * 0.10;
+    return `rgba(231,236,255,${Math.min(a,0.9)})`;
+  }
+
+  function render(){
+    svg.selectAll("*").remove();
+    const width = svg.node().clientWidth;
+    const height = svg.node().clientHeight;
+
+    currentEl.textContent = ROOT;
+
+    const treeObj = buildTree(ROOT);
+    const root = d3.hierarchy(treeObj, d => d.children);
+
+    const layout = d3.tree().size([height - 40, width - 260]);
+    layout(root);
+
+    const g = svg.append("g").attr("transform", "translate(130,20)");
+    svg.call(d3.zoom().scaleExtent([0.35, 2.7]).on("zoom", (ev) => g.attr("transform", ev.transform)));
+
+    g.selectAll("path.link")
+      .data(root.links())
+      .enter()
+      .append("path")
+      .attr("fill","none")
+      .attr("stroke","rgba(255,255,255,.18)")
+      .attr("stroke-width",1.6)
+      .attr("d", d3.linkHorizontal().x(d => d.y).y(d => d.x));
+
+    const nodes = g.selectAll("g.node")
+      .data(root.descendants())
+      .enter()
+      .append("g")
+      .attr("class","node")
+      .attr("transform", d => `translate(${d.y},${d.x})`);
+
+    nodes.append("circle")
+      .attr("r", d => d.depth === 0 ? 9 : (d.data.kind === "mutation" ? 6 : 4.7))
+      .attr("fill", d => nodeColor(d.data.kind, d.data.rarity))
+      .attr("stroke","rgba(255,255,255,.25)")
+      .on("mousemove", (ev, d) => {
+        const isMut = d.data.kind === "mutation";
+        const title = (d.depth === 0) ? d.data.id : `${d.data.count}x ${d.data.id}`;
+
+        if (!isMut) {
+          showTip(`
+            <div class="name">${title}</div>
+            <div class="meta"><div>Type: base item</div></div>
+          `, ev.clientX, ev.clientY);
+          return;
+        }
+
+        const m = d.data.meta || INDEX.get(d.data.id);
+        const ingredients = m ? parseIngredients(m.spread) : [];
+        const lay = recommendLayout(ingredients, d.data.id);
+
+        const ingList = ingredients.length
+          ? `<ul>${ingredients.map(it => `<li>${it.count}x ${it.name}</li>`).join("")}</ul>`
+          : `<div class="hint">(No adjacency ingredients)</div>`;
+
+        const gridHtml = `
+          <div class="gridTitle">3×3 combine layout (slots 1–9, mutation at 5)</div>
+          <div class="grid">
+            ${lay.grid.map((c, idx) => `
+              <div class="cell ${idx === 4 ? "center" : ""}">
+                <div class="slotNum">${idx+1}</div>
+                <div class="slotVal ${c.text ? "" : "small"}">${c.text || "—"}</div>
+              </div>
+            `).join("")}
+          </div>
+          ${lay.note ? `<div class="hint" style="margin-top:6px;">${lay.note}</div>` : ""}
+        `;
+
+        showTip(`
+          <div class="name">${title}<span class="tag">${m?.rarity || d.data.rarity}</span></div>
+          <div class="meta">
+            ${m?.size ? `<div>Size: ${m.size}</div>` : ""}
+            ${m?.surface ? `<div>Growth Surface: ${m.surface}</div>` : ""}
+            ${m?.spread ? `<div>Spreading Conditions: ${m.spread}</div>` : ""}
+            ${m?.effects ? `<div>Effects: ${m.effects}</div>` : ""}
+          </div>
+          <div class="sep"></div>
+          <div class="meta"><div><b>Ingredients needed</b></div></div>
+          ${ingList}
+          <div class="sep"></div>
+          ${gridHtml}
+          <div class="hint" style="margin-top:8px;">(Click this node to drill into its own recipe)</div>
+        `, ev.clientX, ev.clientY);
+      })
+      .on("mouseleave", hideTip)
+      .on("click", (ev, d) => {
+        if (d.data.kind !== "mutation") return;
+        ROOT = d.data.id;
+        searchEl.value = ROOT;
+        render();
+      });
+
+    nodes.append("text")
+      .attr("dx", d => d.children ? -10 : 10)
+      .attr("dy", 4)
+      .attr("text-anchor", d => d.children ? "end" : "start")
+      .attr("fill","rgba(231,236,255,.92)")
+      .style("font-weight", d => d.depth === 0 ? 900 : 520)
+      .text(d => d.depth === 0 ? d.data.id : `${d.data.count}x ${d.data.id}`);
+
+    countsEl.textContent = `Tree nodes: ${root.descendants().length} • links: ${root.links().length}`;
+    setStatus("Ready");
+  }
+
+  function bestMatch(q){
+    const s = safeText(q).toLowerCase();
+    if (!s) return null;
+    const exact = NAMES.find(n => n.toLowerCase() === s);
+    if (exact) return exact;
+    const starts = NAMES.find(n => n.toLowerCase().startsWith(s));
+    if (starts) return starts;
+    const includes = NAMES.find(n => n.toLowerCase().includes(s));
+    if (includes) return includes;
+    return null;
+  }
+
+  function go(){
+    const m = bestMatch(searchEl.value);
+    if (!m) { setStatus("No match."); return; }
+    ROOT = m;
+    setStatus(`Showing: ${ROOT}`);
+    render();
+  }
+
+  goBtn.addEventListener("click", go);
+  searchEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") go();
+  });
+
+  // init
+  searchEl.value = ROOT;
+  render();
+})();
+</script>
+</body>
+</html>
