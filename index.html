@@ -88,7 +88,6 @@
       opacity:.92;
       margin-left: 8px;
     }
-    .link { color: inherit; text-decoration: none; border-bottom: 1px dotted rgba(255,255,255,.35); }
 
     .gold { color: #ffd56a; font-weight: 800; }
   </style>
@@ -99,7 +98,7 @@
     <div class="row" style="justify-content:space-between;">
       <div class="row">
         <div class="title">🌿 Mutations Crafting Tree</div>
-        <div class="hint">Search → Enter. Hover circles for info (hides instantly). Click mutation circles to drill in. Ctrl+Z = Go back to baseline.</div>
+        <div class="hint">Hover circles for info (hides instantly). Click mutation circles to drill in. Ctrl+Z = Go back 1 step.</div>
       </div>
       <div class="hint" id="counts">—</div>
     </div>
@@ -109,12 +108,7 @@
         <input id="search" list="mutList" placeholder="Search mutation… (e.g. Timestalk)" />
         <datalist id="mutList"></datalist>
         <button id="go">Go</button>
-        <button id="back" title="Back to the baseline mutation you searched">Go back</button>
-      </div>
-
-      <div class="pill">
-        <div class="hint">Baseline:</div>
-        <div id="baseline" style="font-weight:800;">—</div>
+        <button id="back" title="Go back 1 step (same as Ctrl+Z)">Go back</button>
       </div>
 
       <div class="pill">
@@ -148,7 +142,6 @@
   const statusEl = $("#status");
   const countsEl = $("#counts");
   const currentEl = $("#current");
-  const baselineEl = $("#baseline");
   const tipEl = $("#tip");
   const svg = d3.select("#viz");
 
@@ -205,7 +198,7 @@
     { name:"Timestalk", rarity:"LEGENDARY", size:"1x1", surface:"Soul Sand", spread:"4x Stoplight Petal / 2x Chorus Fruit / 2x Shellfruit", drops:"[More Info Needed]", effects:"Improved Water Retain / Improved XP Boost / Harvest Loss" },
   ];
 
-  const rarityOrder = ["COMMON","UNCOMMON","RARE","EPIC","LEGENDARY","UNKNOWN","BASE","ACTION","ITEM","NPC","LINK"];
+  const rarityOrder = ["COMMON","UNCOMMON","RARE","EPIC","LEGENDARY","UNKNOWN","BASE","ACTION","ITEM","LINK"];
   const INDEX = new Map(MUTATIONS.map(m => [m.name, m]));
   const NAMES = [...INDEX.keys()].sort((a,b)=>a.localeCompare(b));
   const mutationNamesSet = new Set(NAMES);
@@ -216,15 +209,15 @@
   // datalist
   for (const n of NAMES) { const opt = document.createElement("option"); opt.value = n; listEl.appendChild(opt); }
 
-  let BASELINE = null;
+  // Navigation
   let ROOT = null;
+  const HISTORY = []; // stack of previous ROOTs
 
   function safeText(s){ return (s||"").replace(/\s+/g," ").trim(); }
   function setStatus(s){ statusEl.textContent = s; }
   function updateUI(){
-    baselineEl.textContent = BASELINE || "—";
     currentEl.textContent = ROOT || "—";
-    backBtn.disabled = !(BASELINE && ROOT && ROOT !== BASELINE);
+    backBtn.disabled = HISTORY.length === 0;
   }
   function showTip(html, x, y){
     tipEl.innerHTML = html;
@@ -237,7 +230,7 @@
   function nodeColor(kind, rarity){
     if (kind === "base" || kind === "item") return "rgba(255,255,255,.28)";
     if (kind === "action") return "rgba(255,255,255,.16)";
-    if (kind === "npc" || kind === "link") return "rgba(180,210,255,.30)";
+    if (kind === "link") return "rgba(180,210,255,.30)";
     const idx = Math.max(0, rarityOrder.indexOf((rarity||"UNKNOWN").toUpperCase()));
     const a = 0.35 + Math.min(idx, 4) * 0.12;
     return `rgba(231,236,255,${Math.min(a,0.92)})`;
@@ -273,7 +266,7 @@
     return [...merged.entries()].map(([name,count]) => ({name,count}));
   }
 
-  // --- GRID SIZING (NEW) ---
+  // --- GRID SIZING ---
   function parseSize(sizeStr){
     const m = String(sizeStr||"1x1").match(/(\d+)\s*x\s*(\d+)/i);
     if (!m) return { w:1, h:1 };
@@ -282,14 +275,12 @@
   function gridDimForSize(sizeStr){
     const { w, h } = parseSize(sizeStr);
     const plant = Math.max(w, h);
-    if (plant >= 3) return 5; // 3x3 mutation -> 5x5 grid
-    if (plant === 2) return 4; // 2x2 mutation -> 4x4 grid
-    return 3; // 1x1 -> 3x3 grid
+    if (plant >= 3) return 5; // 3x3 -> 5x5
+    if (plant === 2) return 4; // 2x2 -> 4x4
+    return 3; // 1x1 -> 3x3
   }
-
   function idxRC(dim, r, c){ return (r-1)*dim + (c-1); } // 1-indexed
   function plantAreaMask(dim){
-    // dim 3 -> 1x1 plant; dim4 -> 2x2; dim5 -> 3x3
     const plantSize = dim - 2;
     const start = 2;
     const end = start + plantSize - 1;
@@ -301,34 +292,22 @@
     }
     return { mask, plantSize, start, end };
   }
-
   function ringOrder(dim, plantMeta){
-    // preferred fill order around plant footprint (center-ish sides first)
     const { start, end, plantSize } = plantMeta;
-
-    // choose a “visual mid row/col” (for 2x2 we use start row/col to mimic “second row” preference)
     const midR = (plantSize % 2 === 1) ? (start + Math.floor(plantSize/2)) : start;
     const midC = (plantSize % 2 === 1) ? (start + Math.floor(plantSize/2)) : start;
 
     const order = [];
-
-    // side cells adjacent to plant rows (left side then right side)
     for (let r=start; r<=end; r++) order.push(idxRC(dim, r, 1));
     for (let r=start; r<=end; r++) order.push(idxRC(dim, r, dim));
-
-    // top/bottom rows adjacent to plant cols
     for (let c=start; c<=end; c++) order.push(idxRC(dim, 1, c));
     for (let c=start; c<=end; c++) order.push(idxRC(dim, dim, c));
-
-    // corners last
     order.push(idxRC(dim, 1, 1), idxRC(dim, 1, dim), idxRC(dim, dim, 1), idxRC(dim, dim, dim));
 
-    // de-dupe while preserving order
     const seen = new Set();
     const out = [];
     for (const i of order) { if (!seen.has(i)) { seen.add(i); out.push(i); } }
 
-    // bring “mid row left/right” to front for nicer look
     const leftMid  = idxRC(dim, midR, 1);
     const rightMid = idxRC(dim, midR, dim);
     const topMid   = idxRC(dim, 1, midC);
@@ -338,7 +317,8 @@
     const final = [];
     for (const p of priority) if (out.includes(p)) final.push(p);
     for (const i of out) if (!final.includes(i)) final.push(i);
-    return { order: final, cross: { left:leftMid, top:topMid, right:rightMid, bottom:botMid }, midR, midC };
+
+    return { order: final, cross: { left:leftMid, top:topMid, right:rightMid, bottom:botMid } };
   }
 
   function recommendLayoutScaled(sizeStr, ingredients, targetName){
@@ -347,8 +327,7 @@
     const plant = plantAreaMask(dim);
     const ring = ringOrder(dim, plant);
 
-    // main label cell:
-    // odd plant (1 or 3): true center; even plant (2): top-left of plant footprint.
+    // main label cell (odd plant -> center; even plant -> top-left of footprint)
     const mainR = (plant.plantSize % 2 === 1) ? (plant.start + Math.floor(plant.plantSize/2)) : plant.start;
     const mainC = (plant.plantSize % 2 === 1) ? (plant.start + Math.floor(plant.plantSize/2)) : plant.start;
     const mainIndex = idxRC(dim, mainR, mainC);
@@ -358,7 +337,6 @@
       return { dim, cells, plantMask: plant.mask, mainIndex, note: "No adjacency ingredients required." };
     }
 
-    // requirement-based
     if (ingredients.length === 1 && /All positive crop effects/i.test(ingredients[0].name)) {
       return { dim, cells, plantMask: plant.mask, mainIndex, note: "Requirement-based: All positive crop effects must be present." };
     }
@@ -366,18 +344,15 @@
     const distinct = ingredients.length;
     const total = ingredients.reduce((s,it)=>s+(it.count||1),0);
 
-    // expand instances
     const instances = [];
     for (const it of ingredients){
       const c = Math.max(1, Number(it.count||1));
       for (let i=0;i<c;i++) instances.push(it.name);
     }
 
-    // available slots = everything NOT in plant footprint
     const ringSlots = ring.order.filter(i => !plant.mask[i]);
     const capacity = ringSlots.length;
 
-    // total=2: place on mid row left/right
     if (total === 2) {
       const a = ring.cross.left;
       const b = ring.cross.right;
@@ -386,7 +361,6 @@
       return { dim, cells, plantMask: plant.mask, mainIndex, note: "" };
     }
 
-    // single ingredient total=4: cross (LEFT, TOP, RIGHT, BOTTOM) => matches your “4 2 6 8” idea
     if (distinct === 1 && total === 4) {
       const crossOrder = [ring.cross.left, ring.cross.top, ring.cross.right, ring.cross.bottom];
       for (let i=0;i<4;i++){
@@ -396,7 +370,6 @@
       return { dim, cells, plantMask: plant.mask, mainIndex, note: "" };
     }
 
-    // fit without compression
     if (total <= capacity) {
       for (let i=0;i<Math.min(capacity, instances.length); i++){
         const pos = ringSlots[i];
@@ -405,7 +378,6 @@
       return { dim, cells, plantMask: plant.mask, mainIndex, note: "" };
     }
 
-    // compress when total exceeds available slots
     const slotCounts = Array.from({length: capacity}, () => ({}));
     let cursor = 0;
     for (const name of instances) {
@@ -442,21 +414,20 @@
     `;
   }
 
-  // Shellfruit special explosion grid (still 3x3)
+  // Shellfruit explosion grid (still 3x3)
   function shellfruitSpecialGrid(){
     const dim = 3;
     const cells = Array(9).fill("");
-    const plantMask = Array(9).fill(false); // no plant footprint highlight here
+    const plantMask = Array(9).fill(false);
     const mainIndex = 4; // slot 5
     cells[4] = "Turtlellini";
     cells[2] = "Blastberry"; // slot 3
     cells[5] = "Blastberry"; // slot 6
-    // highlight center cell as the “main”
     plantMask[4] = true;
     return { dim, cells, plantMask, mainIndex };
   }
 
-  // Godseed special 5x5 requirement grid (keep as you asked)
+  // Godseed special 5x5 requirement grid
   function godseedSpecialGrid5(){
     const dim = 5;
     const cells = Array(25).fill("");
@@ -471,14 +442,13 @@
     return { dim, cells, plantMask: plant.mask, mainIndex };
   }
 
-  // Default ingredients for normal mutations
   function ingredientsForMutation(name){
     const m = INDEX.get(name);
     if (!m) return [];
     return parseIngredients(m.spread);
   }
 
-  // Build standard (horizontal) recipe tree (recursive)
+  // Build standard recipe tree (recursive)
   function buildStandardTree(rootName){
     const visiting = new Set();
     function nodeFor(name, count){
@@ -499,7 +469,7 @@
       if (!isMut) return node;
 
       const key = name.toLowerCase();
-      if (visiting.has(key)) return node; // avoid cycles
+      if (visiting.has(key)) return node;
       visiting.add(key);
 
       const ing = ingredientsForMutation(name);
@@ -515,7 +485,6 @@
   function makeNode({ id, label, kind, rarity, url, meta, glow, count }) {
     return { id, label: label ?? id, kind, rarity, url: url ?? null, meta: meta ?? null, glow: !!glow, count: count ?? 1 };
   }
-
   function specialChain(rootName){
     if (rootName === "Shellfruit") {
       return [
@@ -525,14 +494,12 @@
         makeNode({ id:"Blastberry", label:"Blastberry (x2)", kind:"mutation", rarity: INDEX.get("Blastberry")?.rarity || "RARE", meta: INDEX.get("Blastberry"), count: 2 }),
       ];
     }
-
     if (rootName === "Godseed") {
       return [
         makeNode({ id:"Godseed", kind:"mutation", rarity: INDEX.get("Godseed")?.rarity || "LEGENDARY", meta: INDEX.get("Godseed") }),
         makeNode({ id:"Requirement: all positive crop effects present", kind:"action", rarity:"ACTION" }),
       ];
     }
-
     if (rootName === "Jerryflower") {
       return [
         makeNode({ id:"Jerryflower", kind:"mutation", rarity: INDEX.get("Jerryflower")?.rarity || "LEGENDARY", meta: INDEX.get("Jerryflower") }),
@@ -543,7 +510,6 @@
         makeNode({ id:"Chance to obtain by Jerry in ⏣ The Garden", kind:"action", rarity:"ACTION" }),
       ];
     }
-
     return [];
   }
 
@@ -553,7 +519,6 @@
     const badge = isMutation ? (m?.rarity || n.rarity || "UNKNOWN") : (n.rarity || n.kind);
     const head = `<div class="name">${safeText(n.label)}<span class="tag">${badge}</span></div>`;
 
-    // link node (Dirt Guy)
     if (n.kind === "link" && n.url) {
       return `
         ${head}
@@ -564,7 +529,6 @@
       `;
     }
 
-    // mutation details
     let details = "";
     if (isMutation && m) {
       details = `
@@ -577,24 +541,19 @@
       `;
     }
 
-    // SPECIAL: Shellfruit tooltip includes explosion grid
     if (isMutation && n.id === "Shellfruit") {
       const g = shellfruitSpecialGrid();
       return `
         ${head}
-        <div class="meta">
-          <div><b>Special:</b> Explode Turtlellini with <b>2x</b> Blastberry to obtain Shellfruit.</div>
-        </div>
+        <div class="meta"><div><b>Special:</b> Explode Turtlellini with <b>2x</b> Blastberry to obtain Shellfruit.</div></div>
         ${details}
         <div class="sep"></div>
         <div class="meta"><div><b>Explosion placement (3×3)</b></div></div>
         <div class="gridTitle">Turtlellini at 5, Blastberry at 3 and 6.</div>
         ${gridHtml(g.dim, g.cells, g.plantMask, g.mainIndex)}
-        <div class="hint" style="margin-top:6px;">Hover Turtlellini / Blastberry nodes in the line to see their normal crafting trees.</div>
       `;
     }
 
-    // SPECIAL: Godseed tooltip includes 5x5 requirement grid
     if (isMutation && n.id === "Godseed") {
       const g = godseedSpecialGrid5();
       return `
@@ -612,21 +571,17 @@
       `;
     }
 
-    // SPECIAL: Jerryflower tooltip (no grid)
     if (isMutation && n.id === "Jerryflower") {
       return `
         ${head}
         <div class="meta">
-          <div><b>Special chain:</b> Plant a <b>Fertilized Jerryseed</b> → Dirty Unripe Jerryseed + Dirt Guy → Xalx (Goblin Holdout) with Unfulfilled Jerryseed + Mysterious Crop.</div>
+          <div><b>Special chain:</b> Fertilized Jerryseed → Dirty Unripe Jerryseed + Dirt Guy → Xalx with Unfulfilled Jerryseed + Mysterious Crop.</div>
           <div>Unfulfilled Jerryseed: chance after serving <span class="gold">Jerry</span> in ⏣ The Garden.</div>
         </div>
         ${details}
-        <div class="sep"></div>
-        <div class="hint">Click the blue-glow “Dirty | Unripe Jerryseed + Dirt Guy” node to open the Dirt Guy fandom page.</div>
       `;
     }
 
-    // DEFAULT mutation tooltip (SCALED GRID)
     if (isMutation && m) {
       const ingredients = ingredientsForMutation(n.id);
       const lay = recommendLayoutScaled(m.size, ingredients, n.id);
@@ -649,7 +604,7 @@
       `;
     }
 
-    // Action nodes: ONLY color Jerry gold on that one exact line
+    // Action nodes: only gold “Jerry” in this exact line
     if (n.kind === "action") {
       const label = safeText(n.label);
       const txt = (label === "Chance to obtain by Jerry in ⏣ The Garden")
@@ -658,7 +613,6 @@
       return `${head}<div class="meta"><div>${txt}</div></div>`;
     }
 
-    // other nodes
     return `${head}<div class="meta"><div>Type: ${n.kind}</div></div>`;
   }
 
@@ -682,6 +636,23 @@
       .text("Special straight-line views: Shellfruit, Godseed, Jerryflower.");
     countsEl.textContent = "—";
     updateUI();
+  }
+
+  // Navigation helpers (NEW)
+  function setRoot(next, { push=true, resetHistory=false } = {}) {
+    if (!next || !mutationNamesSet.has(next)) return;
+    if (next === ROOT) return;
+
+    if (resetHistory) HISTORY.length = 0;
+    if (push && ROOT) HISTORY.push(ROOT);
+
+    ROOT = next;
+    render();
+  }
+  function backOne() {
+    if (HISTORY.length === 0) return;
+    ROOT = HISTORY.pop();
+    render();
   }
 
   // Standard horizontal tree
@@ -723,7 +694,7 @@
       .on("mouseleave", hideTip)
       .on("click", (ev, d) => {
         if (d.data.kind !== "mutation") return;
-        navigateTo(d.data.id, { setBaseline: false });
+        setRoot(d.data.id, { push:true });
       });
 
     nodes.append("text")
@@ -795,7 +766,7 @@
           return;
         }
         if (d.kind === "mutation" && mutationNamesSet.has(d.id)) {
-          navigateTo(d.id, { setBaseline: false });
+          setRoot(d.id, { push:true });
         }
       });
 
@@ -849,41 +820,28 @@
     return null;
   }
 
-  function navigateTo(name, { setBaseline }){
-    if (!mutationNamesSet.has(name)) return;
-    if (setBaseline) BASELINE = name;
-    ROOT = name;
-    render();
-  }
-
   function go(){
     const m = bestMatch(searchEl.value);
     if (!m) { setStatus("No match."); return; }
-    BASELINE = m;
-    ROOT = m;
-    render();
-  }
-
-  function goBackToBaseline(){
-    if (!BASELINE) return;
-    ROOT = BASELINE;
-    render();
+    setRoot(m, { push:false, resetHistory:true }); // starting point clears history
   }
 
   goBtn.addEventListener("click", go);
-  backBtn.addEventListener("click", goBackToBaseline);
+  backBtn.addEventListener("click", backOne);
   searchEl.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
 
-  // Ctrl+Z: back to baseline (don’t steal undo while typing)
+  // Ctrl+Z: go back ONE step (don’t steal undo while typing)
   document.addEventListener("keydown", (e) => {
     const isCtrlZ = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z");
     if (!isCtrlZ) return;
+
     const ae = document.activeElement;
     const typing = ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
     if (typing) return;
-    if (BASELINE && ROOT && ROOT !== BASELINE) {
+
+    if (HISTORY.length > 0) {
       e.preventDefault();
-      goBackToBaseline();
+      backOne();
     }
   });
 
@@ -891,8 +849,8 @@
 
   // Start clean
   searchEl.value = "";
-  BASELINE = null;
   ROOT = null;
+  HISTORY.length = 0;
   updateUI();
   renderEmpty();
 })();
